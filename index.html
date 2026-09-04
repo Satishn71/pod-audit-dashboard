@@ -872,6 +872,28 @@ function mostCriticalParameters(brandSummaries, topN){
   return all.sort((a,b) => a.avg_pct - b.avg_pct).slice(0, topN);
 }
 
+function buildParamBrandMatrix(brandSummaries){
+  const map = new Map();
+  ['FNV','NOICE','OTHER'].forEach(b => {
+    brandSummaries[b].parameterwise.forEach(p => {
+      if (!map.has(p.parameter)) map.set(p.parameter, { parameter: p.parameter });
+      const row = map.get(p.parameter);
+      row[b] = p.avg_pct;
+      row[b + '_n'] = p.n;
+    });
+  });
+  const rows = [...map.values()];
+  rows.forEach(r => {
+    let weighted = 0, totalN = 0;
+    ['FNV','NOICE','OTHER'].forEach(b => {
+      if (r[b] !== undefined && r[b + '_n']) { weighted += r[b] * r[b + '_n']; totalN += r[b + '_n']; }
+    });
+    r.overall_pct = totalN ? round1(weighted / totalN) : null;
+    r.brands_present = ['FNV','NOICE','OTHER'].filter(b => r[b] !== undefined).length;
+  });
+  return rows;
+}
+
 function buildNarrative(totalPods, cities, avgOverall, brandRows, best, worst, criticalParams){
   if (totalPods === 0) return 'No audits found in the selected date range.';
   const sorted = [...brandRows].sort((a,b) => a.avg_pct - b.avg_pct);
@@ -914,6 +936,7 @@ function renderExecSummaryTab(meta, overallSummary, brandSummaries){
   const best = [...overallSummary.storewise].slice(-5).reverse();
   const criticalParams = mostCriticalParameters(brandSummaries, 10);
   const narrative = buildNarrative(totalPods, cities, overallSummary.avg_overall, brandRows, best, worst, criticalParams);
+  const paramBrandMatrix = buildParamBrandMatrix(brandSummaries);
 
   panel.innerHTML = `
     <div class="kpi-row">${kpis}</div>
@@ -924,6 +947,7 @@ function renderExecSummaryTab(meta, overallSummary, brandSummaries){
       ${card('Top 5 highest-scoring stores', '', '<div id="exec-best-table"></div>')}
     </div>
     ${card('Most critical parameters', 'Lowest average compliance across all brands, merged and ranked.', '<div id="exec-critical-table"></div>')}
+    ${card('Parameter vs brand performance', 'Same checklist parameter, compared across brands — spot parameters that underperform in one brand but not another.', '<div id="exec-parambrand-table"></div>')}
   `;
 
   dataTable('exec-worst-table', [
@@ -942,6 +966,14 @@ function renderExecSummaryTab(meta, overallSummary, brandSummaries){
     {key:'non_pct', label:'Non %', num:true, render:r=>pct(r.non_pct)},
     {key:'non_compliant_stores', label:'Non-compliant stores', render:r => r.non_compliant_stores.length ? esc(r.non_compliant_stores.join(', ')) : '<span class="badge">None</span>'},
   ], criticalParams, 'avg_pct', 1, {filename:'exec_critical_parameters.csv'}).mount(document.getElementById('exec-critical-table'));
+
+  dataTable('exec-parambrand-table', [
+    {key:'parameter', label:'Parameter'},
+    {key:'FNV', label:BRAND_LABEL.FNV, num:true, render:r=>pct(r.FNV)},
+    {key:'NOICE', label:BRAND_LABEL.NOICE, num:true, render:r=>pct(r.NOICE)},
+    {key:'OTHER', label:BRAND_LABEL.OTHER, num:true, render:r=>pct(r.OTHER)},
+    {key:'overall_pct', label:'Overall (blended)', num:true, render:r=>pct(r.overall_pct)},
+  ], paramBrandMatrix, 'overall_pct', 1, {filename:'exec_parameter_vs_brand.csv'}).mount(document.getElementById('exec-parambrand-table'));
 }
 
 // ---------- Overall tab ----------
