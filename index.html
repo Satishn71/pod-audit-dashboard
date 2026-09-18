@@ -236,6 +236,15 @@
   .modal-remarks ul { margin:0; padding-left: 18px; }
   .modal-remarks li { margin-bottom: 6px; }
   .modal-foot { display:flex; gap:10px; margin-top: 18px; justify-content:flex-end; }
+  .compliance-toolbar { display:flex; align-items:center; gap:14px; margin-bottom:10px; flex-wrap:wrap; }
+  .compliance-toolbar select { border:1px solid var(--border); background:var(--page); color:var(--text-primary); border-radius:6px; padding:5px 8px; font-size:13px; }
+  .count-link { background:transparent; border:1px solid var(--border); border-radius:6px; padding:2px 9px; cursor:pointer; font:inherit; color:var(--text-primary); }
+  .count-link:hover { border-color:var(--accent); color:var(--accent); }
+  .store-list { margin:0; padding-left:0; list-style:none; max-height:50vh; overflow:auto; }
+  .store-list li { border-bottom:1px solid var(--border); }
+  .store-list li:last-child { border-bottom:none; }
+  .store-list-link { display:block; width:100%; text-align:left; background:transparent; border:none; color:var(--text-primary); cursor:pointer; font-size:13px; padding:7px 2px; }
+  .store-list-link:hover { color:var(--accent); }
 </style>
 </head>
 <body>
@@ -285,6 +294,17 @@
       <button id="reportModalDownloadCsv">Download CSV</button>
       <button id="reportModalDownloadPdf">Download PDF</button>
     </div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="storeListModal">
+  <div class="modal-box" style="max-width:520px">
+    <div class="modal-head">
+      <h2 id="storeListModalTitle"></h2>
+      <button class="modal-close" id="storeListModalClose">&times;</button>
+    </div>
+    <div class="modal-meta" id="storeListModalMeta"></div>
+    <div id="storeListModalBody"></div>
   </div>
 </div>
 
@@ -1020,6 +1040,118 @@ function buildParamBrandMatrix(brandSummaries){
   return rows;
 }
 
+// Store-level (not checkpoint-row-level) compliance buckets, per brand + parameter.
+// A store's bucket for a given parameter is its average score across that parameter's
+// checkpoint row(s) for that store (some parameters, e.g. "Zone-end check", span several
+// zone-specific rows per store) — avg 2 = Fully compliant, avg 0 = Non compliant, else Partial.
+function buildBrandParamStoreCompliance(checkpointRows, brand){
+  const rows = checkpointRows.filter(r => r.brand === brand);
+  const byParam = groupBy(rows, r => r.parameter);
+  return [...byParam.entries()].map(([parameter, prows]) => {
+    const byStore = groupBy(prows, r => r.pod_name);
+    const pan = { full: [], partial: [], non: [] };
+    const byCity = new Map();
+    byStore.forEach((srows, store) => {
+      const avg = srows.reduce((a,r) => a + r.score, 0) / srows.length;
+      const bucket = avg >= 2 ? 'full' : (avg <= 0 ? 'non' : 'partial');
+      const city = srows[0].city;
+      pan[bucket].push(store);
+      if (!byCity.has(city)) byCity.set(city, { full: [], partial: [], non: [] });
+      byCity.get(city)[bucket].push(store);
+    });
+    return { parameter, pan, byCity };
+  });
+}
+
+function buildComplianceMatrix(checkpointRows){
+  const out = [];
+  ['FNV','NOICE','OTHER'].forEach(b => {
+    buildBrandParamStoreCompliance(checkpointRows, b).forEach(row => out.push({ brandKey: b, brand: BRAND_LABEL[b], ...row }));
+  });
+  return out;
+}
+
+// Renders the Brand x Parameter compliance table with a PAN India / Citywise toggle
+// and click-to-expand store lists on each count.
+function complianceMatrixWidget(rows, cities){
+  let mode = 'pan';
+  let selectedCity = cities[0] || null;
+
+  function bucketList(row, bucket){
+    if (mode === 'pan') return row.pan[bucket];
+    const cb = selectedCity ? row.byCity.get(selectedCity) : null;
+    return cb ? cb[bucket] : [];
+  }
+
+  function countCellHtml(r, bucket){
+    const n = r[bucket + '_n'];
+    if (!n) return '<span class="badge">0</span>';
+    return `<button type="button" class="count-link" data-brand="${esc(r.brandKey)}" data-parameter="${esc(r.parameter)}" data-bucket="${bucket}">${n}</button>`;
+  }
+
+  function tableRows(){
+    return rows.map(r => ({
+      brand: r.brand, brandKey: r.brandKey, parameter: r.parameter,
+      full_n: bucketList(r, 'full').length, partial_n: bucketList(r, 'partial').length, non_n: bucketList(r, 'non').length,
+    }));
+  }
+
+  function storeListFor(brandKey, parameter, bucket){
+    const row = rows.find(r => r.brandKey === brandKey && r.parameter === parameter);
+    return row ? bucketList(row, bucket) : [];
+  }
+
+  return {
+    mount(el){
+      el.innerHTML = `
+        <div class="compliance-toolbar">
+          <nav class="filter-mode-toggle">
+            <button type="button" data-view="pan" class="active">PAN India</button>
+            <button type="button" data-view="city">Citywise</button>
+          </nav>
+          <label class="compliance-city-select" style="display:none">City <select>${cities.map(c => `<option value="${esc(c)}">${esc(c)}</option>`).join('')}</select></label>
+        </div>
+        <div class="compliance-table-holder"></div>
+      `;
+      const toggle = el.querySelector('.filter-mode-toggle');
+      const cityLabel = el.querySelector('.compliance-city-select');
+      const citySelect = cityLabel.querySelector('select');
+      const tableHolder = el.querySelector('.compliance-table-holder');
+
+      function renderTable(){
+        dataTable('exec-compliance-table', [
+          {key:'brand', label:'Brand'},
+          {key:'parameter', label:'Parameter'},
+          {key:'full_n', label:'Fully compliant', num:true, render:r=>countCellHtml(r,'full')},
+          {key:'partial_n', label:'Partially compliant', num:true, render:r=>countCellHtml(r,'partial')},
+          {key:'non_n', label:'Non compliant', num:true, render:r=>countCellHtml(r,'non')},
+        ], tableRows(), 'non_n', -1, {filename:'exec_brand_parameter_compliance.csv'}).mount(tableHolder);
+      }
+
+      toggle.querySelectorAll('button').forEach(btn => {
+        btn.addEventListener('click', () => {
+          if (btn.dataset.view === mode) return;
+          mode = btn.dataset.view;
+          toggle.querySelectorAll('button').forEach(b => b.classList.toggle('active', b === btn));
+          cityLabel.style.display = mode === 'city' ? '' : 'none';
+          renderTable();
+        });
+      });
+      citySelect.addEventListener('change', () => { selectedCity = citySelect.value; renderTable(); });
+
+      tableHolder.addEventListener('click', (e) => {
+        const btn = e.target.closest('.count-link');
+        if (!btn) return;
+        const stores = storeListFor(btn.dataset.brand, btn.dataset.parameter, btn.dataset.bucket);
+        const bucketLabel = btn.dataset.bucket === 'full' ? 'Fully compliant' : (btn.dataset.bucket === 'partial' ? 'Partially compliant' : 'Non compliant');
+        openStoreListModal(`${bucketLabel} — ${BRAND_LABEL[btn.dataset.brand]} · ${btn.dataset.parameter}`, mode === 'pan' ? 'PAN India' : selectedCity, stores);
+      });
+
+      renderTable();
+    },
+  };
+}
+
 function buildNarrative(totalPods, cities, avgOverall, brandRows, best, worst, criticalParams){
   if (totalPods === 0) return 'No audits found in the selected date range.';
   const sorted = [...brandRows].sort((a,b) => a.avg_pct - b.avg_pct);
@@ -1038,7 +1170,7 @@ function buildNarrative(totalPods, cities, avgOverall, brandRows, best, worst, c
   return parts.join(' ');
 }
 
-function renderExecSummaryTab(meta, overallSummary, brandSummaries){
+function renderExecSummaryTab(meta, overallSummary, brandSummaries, ckpt){
   const panel = document.getElementById('panel-exec');
   const totalPods = overallSummary.total_pods;
   const cities = new Set(meta.map(p => p.city)).size;
@@ -1063,6 +1195,8 @@ function renderExecSummaryTab(meta, overallSummary, brandSummaries){
   const criticalParams = mostCriticalParameters(brandSummaries, 10);
   const narrative = buildNarrative(totalPods, cities, overallSummary.avg_overall, brandRows, best, worst, criticalParams);
   const paramBrandMatrix = buildParamBrandMatrix(brandSummaries);
+  const complianceCities = [...new Set(ckpt.map(r => r.city))].filter(Boolean).sort();
+  const complianceRows = buildComplianceMatrix(ckpt);
 
   panel.innerHTML = `
     <div class="kpi-row">${kpis}</div>
@@ -1072,7 +1206,7 @@ function renderExecSummaryTab(meta, overallSummary, brandSummaries){
       ${card('Top 5 lowest-scoring stores', 'Need attention first.', '<div id="exec-worst-table"></div>')}
       ${card('Top 5 highest-scoring stores', '', '<div id="exec-best-table"></div>')}
     </div>
-    ${card('Most critical parameters', 'Lowest average compliance across all brands, merged and ranked.', '<div id="exec-critical-table"></div>')}
+    ${card('Brandwise & parameterwise compliance', 'Number of PODs Fully compliant, Partially compliant, and Non compliant — per brand and checklist parameter. Toggle PAN India / Citywise, click a count to view the store list.', '<div id="exec-compliance-widget"></div>')}
     ${card('Parameter vs brand performance', 'Same checklist parameter, compared across brands — spot parameters that underperform in one brand but not another.', '<div id="exec-parambrand-table"></div>')}
   `;
 
@@ -1086,12 +1220,7 @@ function renderExecSummaryTab(meta, overallSummary, brandSummaries){
     {key:'score_pct', label:'Score', num:true, render:r=>pct(r.score_pct)},
   ], best, 'score_pct', -1, {filename:'exec_highest_stores.csv'}).mount(document.getElementById('exec-best-table'));
 
-  dataTable('exec-critical-table', [
-    {key:'brand', label:'Brand'}, {key:'parameter', label:'Parameter'},
-    {key:'avg_pct', label:'Avg score', num:true, render:r=>pct(r.avg_pct)},
-    {key:'non_pct', label:'Non %', num:true, render:r=>pct(r.non_pct)},
-    {key:'non_compliant_stores', label:'Non-compliant stores', render:r => r.non_compliant_stores.length ? esc(r.non_compliant_stores.join(', ')) : '<span class="badge">None</span>'},
-  ], criticalParams, 'avg_pct', 1, {filename:'exec_critical_parameters.csv'}).mount(document.getElementById('exec-critical-table'));
+  complianceMatrixWidget(complianceRows, complianceCities).mount(document.getElementById('exec-compliance-widget'));
 
   dataTable('exec-parambrand-table', [
     {key:'parameter', label:'Parameter'},
@@ -1360,6 +1489,31 @@ function closeReportModal(){
   document.getElementById('reportModal').classList.remove('active');
 }
 
+function openStoreListModal(title, scopeLabel, stores){
+  document.getElementById('storeListModalTitle').textContent = title;
+  document.getElementById('storeListModalMeta').innerHTML =
+    `<span><strong>Scope:</strong> ${esc(scopeLabel || 'PAN India')}</span><span><strong>Stores:</strong> ${stores.length}</span>`;
+  const body = document.getElementById('storeListModalBody');
+  if (!stores.length) {
+    body.innerHTML = '<div class="empty">No stores in this bucket.</div>';
+  } else {
+    const sorted = [...stores].sort();
+    body.innerHTML = `<ul class="store-list">${sorted.map(s => `<li><button type="button" class="store-list-link" data-store="${esc(s)}">${esc(s)}</button></li>`).join('')}</ul>`;
+    body.querySelectorAll('.store-list-link').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const store = btn.dataset.store;
+        closeStoreListModal();
+        if (DATA.pod_reports[store]) openReportModal(store);
+      });
+    });
+  }
+  document.getElementById('storeListModal').classList.add('active');
+}
+
+function closeStoreListModal(){
+  document.getElementById('storeListModal').classList.remove('active');
+}
+
 function downloadStoreReportPdf(storeName, rows, report){
   const { jsPDF } = window.jspdf;
   const doc = new jsPDF({ orientation: 'landscape', unit: 'pt', format: 'a4' });
@@ -1458,7 +1612,7 @@ function recomputeAndRenderAll(){
     OTHER: buildBrandSummary(ckpt, 'OTHER'),
   };
 
-  renderExecSummaryTab(meta, overallSummary, brandSummaries);
+  renderExecSummaryTab(meta, overallSummary, brandSummaries, ckpt);
   renderOverallTab(overallSummary);
   ['FNV','NOICE','OTHER'].forEach(b => renderBrandTab(b, brandSummaries[b]));
   renderTrendsTab();
@@ -1514,8 +1668,12 @@ function init(){
   document.getElementById('reportModal').addEventListener('click', (e) => {
     if (e.target.id === 'reportModal') closeReportModal();
   });
+  document.getElementById('storeListModalClose').addEventListener('click', closeStoreListModal);
+  document.getElementById('storeListModal').addEventListener('click', (e) => {
+    if (e.target.id === 'storeListModal') closeStoreListModal();
+  });
   document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape') closeReportModal();
+    if (e.key === 'Escape') { closeReportModal(); closeStoreListModal(); }
   });
 
   recomputeAndRenderAll();
