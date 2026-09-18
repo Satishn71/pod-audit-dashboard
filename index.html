@@ -263,6 +263,11 @@
       <button data-mode="week" type="button">Weekly</button>
       <button data-mode="month" type="button">Monthly</button>
     </nav>
+    <nav class="filter-mode-toggle" id="checklistFilterToggle">
+      <button data-checklist="all" class="active" type="button">All stores</button>
+      <button data-checklist="with" type="button">With checklist</button>
+      <button data-checklist="without" type="button">Score-only</button>
+    </nav>
     <div class="filter-controls" id="filterControlsCustom">
       <label>From <input type="date" id="dateFrom"></label>
       <label>To <input type="date" id="dateTo"></label>
@@ -955,6 +960,18 @@ function distStats(scores){
   };
 }
 
+// Splits meta/checkpoint rows by whether the POD has full checklist detail,
+// per CHECKLIST_FILTER ('all' | 'with' | 'without'). Score-only PODs never
+// contribute checkpoint rows, so 'without' always yields an empty ckpt array.
+function applyChecklistFilter(metaRows, ckptRows){
+  if (CHECKLIST_FILTER === 'all') return { meta: metaRows, ckpt: ckptRows };
+  const wantDetail = CHECKLIST_FILTER === 'with';
+  const meta = metaRows.filter(p => !!p.has_detail === wantDetail);
+  if (!wantDetail) return { meta, ckpt: [] };
+  const names = new Set(meta.map(p => p.pod_name));
+  return { meta, ckpt: ckptRows.filter(r => names.has(r.pod_name)) };
+}
+
 function groupBy(arr, keyFn){
   const m = new Map();
   arr.forEach(item => {
@@ -1271,12 +1288,12 @@ function renderOverallTab(o){
 }
 
 // ---------- Trends tab (Week-on-Week / Month-on-Month) ----------
-function buildTrendRows(periods, dateToKey){
+function buildTrendRows(periods, dateToKey, baseMeta, baseCkpt){
   const withScore = p => p.score_pct !== null && p.score_pct !== undefined;
 
   const rows = periods.map(period => {
-    const metaRows = DATA.pod_meta.filter(p => p.date && dateToKey(p.date) === period.key);
-    const ckptRows = DATA.checkpoints.filter(r => r.date && dateToKey(r.date) === period.key);
+    const metaRows = baseMeta.filter(p => p.date && dateToKey(p.date) === period.key);
+    const ckptRows = baseCkpt.filter(r => r.date && dateToKey(r.date) === period.key);
     const scored = metaRows.filter(withScore);
     const avg_pct = scored.length ? round1(scored.reduce((a,p)=>a+p.score_pct,0)/scored.length) : null;
     const dist = distStats(ckptRows.map(r => r.score));
@@ -1305,8 +1322,9 @@ function deltaBadge(delta){
 function renderTrendsTab(){
   const panel = document.getElementById('panel-trends');
   const periods = collectPeriods();
-  const weekRows = buildTrendRows(periods.weeks, d => isoWeekInfo(d).key);
-  const monthRows = buildTrendRows(periods.months, monthKey);
+  const { meta: baseMeta, ckpt: baseCkpt } = applyChecklistFilter(DATA.pod_meta, DATA.checkpoints);
+  const weekRows = buildTrendRows(periods.weeks, d => isoWeekInfo(d).key, baseMeta, baseCkpt);
+  const monthRows = buildTrendRows(periods.months, monthKey, baseMeta, baseCkpt);
 
   if (!weekRows.length && !monthRows.length) {
     panel.innerHTML = card('Trends', '', '<div class="empty">No audits found.</div>');
@@ -1314,9 +1332,9 @@ function renderTrendsTab(){
   }
 
   panel.innerHTML = `
-    ${card('Week-on-week compliance', 'Monday–Sunday weeks with ISO week numbers, across the full dataset (not affected by the filter above).',
+    ${card('Week-on-week compliance', 'Monday–Sunday weeks with ISO week numbers, across the full date range (not affected by the date filter above); respects the Checklist-status filter.',
       barChart(weekRows, 'avg_pct', 'label') + '<div id="trend-week-table" style="margin-top:14px"></div>')}
-    ${card('Month-on-month compliance', 'Calendar months, across the full dataset (not affected by the filter above).',
+    ${card('Month-on-month compliance', 'Calendar months, across the full date range (not affected by the date filter above); respects the Checklist-status filter.',
       barChart(monthRows, 'avg_pct', 'label') + '<div id="trend-month-table" style="margin-top:14px"></div>')}
   `;
 
@@ -1560,6 +1578,7 @@ function downloadStoreReportPdf(storeName, rows, report){
 
 // ---------- Period-mode filter (Custom range / Weekly / Monthly) ----------
 let FILTER_MODE = 'custom';
+let CHECKLIST_FILTER = 'all';
 let PERIODS = null;
 
 function populatePeriodSelects(){
@@ -1598,12 +1617,15 @@ function recomputeAndRenderAll(){
   const filterBar = document.getElementById('filterBar');
   const invalid = FILTER_MODE === 'custom' && !!(from && to && from > to);
   filterBar.classList.toggle('invalid', invalid);
-  document.getElementById('filterNote').textContent = invalid
+  const checklistLabel = CHECKLIST_FILTER === 'with' ? 'With checklist' : (CHECKLIST_FILTER === 'without' ? 'Score-only' : 'All stores');
+  document.getElementById('filterNote').textContent = (invalid
     ? 'Invalid range: "From" is after "To" — showing no results.'
-    : (range.label ? `Filtered: ${range.label}` : (from || to ? `Filtered: ${from || 'earliest'} → ${to || 'latest'}` : 'Showing all dates'));
+    : (range.label ? `Filtered: ${range.label}` : (from || to ? `Filtered: ${from || 'earliest'} → ${to || 'latest'}` : 'Showing all dates'))
+  ) + ` · ${checklistLabel}`;
 
-  const ckpt = DATA.checkpoints.filter(r => inDateRange(r.date, from, to));
-  const meta = DATA.pod_meta.filter(p => inDateRange(p.date, from, to));
+  let ckpt = DATA.checkpoints.filter(r => inDateRange(r.date, from, to));
+  let meta = DATA.pod_meta.filter(p => inDateRange(p.date, from, to));
+  ({ meta, ckpt } = applyChecklistFilter(meta, ckpt));
 
   const overallSummary = buildOverallSummary(meta);
   const brandSummaries = {
@@ -1646,6 +1668,16 @@ function init(){
       document.getElementById('filterControlsCustom').style.display = FILTER_MODE === 'custom' ? '' : 'none';
       document.getElementById('filterControlsWeek').style.display = FILTER_MODE === 'week' ? '' : 'none';
       document.getElementById('filterControlsMonth').style.display = FILTER_MODE === 'month' ? '' : 'none';
+      recomputeAndRenderAll();
+    });
+  });
+
+  const checklistToggle = document.getElementById('checklistFilterToggle');
+  checklistToggle.querySelectorAll('button').forEach(btn => {
+    btn.addEventListener('click', () => {
+      checklistToggle.querySelectorAll('button').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      CHECKLIST_FILTER = btn.dataset.checklist;
       recomputeAndRenderAll();
     });
   });
