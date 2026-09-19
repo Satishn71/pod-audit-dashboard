@@ -103,6 +103,14 @@
   }
   .theme-toggle:hover { color: var(--text-primary); }
 
+  .header-actions { display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
+  .report-link {
+    display:inline-flex; align-items:center; gap:6px; border: 1px solid var(--accent);
+    background: var(--accent-soft); color: var(--accent); border-radius: 8px; padding: 6px 12px;
+    font-size: 12.5px; font-weight:600; text-decoration:none; white-space:nowrap;
+  }
+  .report-link:hover { background: var(--accent); color: #fff; }
+
   .filter-bar { display:flex; align-items:center; gap:14px; flex-wrap:wrap; margin-bottom: 18px; padding: 12px 16px; background: var(--surface-1); border: 1px solid var(--border); border-radius: 10px; }
   .filter-bar.invalid { border-color: var(--critical); }
   .filter-bar label { font-size: 13px; color: var(--text-secondary); display:flex; align-items:center; gap:6px; }
@@ -261,7 +269,10 @@
       <h1>POD Audit Dashboard</h1>
       <p id="metaNote"></p>
     </div>
-    <button class="theme-toggle" id="themeToggle">Toggle theme</button>
+    <div class="header-actions">
+      <a class="report-link" id="reportLink" href="reports/POD-Audit-observations.pdf" target="_blank" rel="noopener">&#128196; Audit Report (Weeks 35&ndash;38, 2026)</a>
+      <button class="theme-toggle" id="themeToggle">Toggle theme</button>
+    </div>
   </header>
 
   <div class="filter-bar" id="filterBar">
