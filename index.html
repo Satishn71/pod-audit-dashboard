@@ -1024,6 +1024,12 @@ function buildComplianceMatrix(checkpointRows){
 // specific checklist parameter (not the full matrix) - a store's bucket is its average score
 // across that parameter's checkpoint row(s) for that store, same rule as buildBrandParamStoreCompliance.
 // A tile is omitted wherever the parameter has zero rows in scope (e.g. no Freezer temp in FNV/DBEM).
+//
+// IMPORTANT: bucket each brand separately, then union the non-compliant store sets - do NOT
+// average a store's rows across brands first. The same parameter name (e.g. "Expiry-Removal")
+// is a genuinely different checkpoint per category (different S.No), so a store non-compliant
+// in FNV but compliant in NOICE/DBEM must still count as non-compliant overall; averaging the
+// two together would dilute the FNV failure away and under-report the Executive Summary tile.
 const HEADLINE_PARAMS = [
   { key: 'Expiry-Removal', label: 'Expiry removal — non-compliant stores' },
   { key: 'Chiller-Temp', label: 'Chiller temp — non-compliant stores' },
@@ -1032,21 +1038,24 @@ const HEADLINE_PARAMS = [
   { key: 'Inward Temp record', label: 'Inward temp record — non-compliant stores' },
 ];
 
-function paramNonCompliantCount(checkpointRows, parameter){
-  const prows = checkpointRows.filter(r => r.parameter === parameter);
-  if (!prows.length) return null;
-  const byStore = groupBy(prows, r => r.pod_name);
-  let non = 0;
-  byStore.forEach(srows => {
-    const avg = srows.reduce((a,r) => a + r.score, 0) / srows.length;
-    if (avg <= 0) non++;
+function paramNonCompliantCount(checkpointRows, parameter, brands){
+  const nonStores = new Set();
+  let found = false;
+  brands.forEach(b => {
+    const brows = checkpointRows.filter(r => r.brand === b && r.parameter === parameter);
+    if (!brows.length) return;
+    found = true;
+    groupBy(brows, r => r.pod_name).forEach((srows, store) => {
+      const avg = srows.reduce((a,r) => a + r.score, 0) / srows.length;
+      if (avg <= 0) nonStores.add(store);
+    });
   });
-  return non;
+  return found ? nonStores.size : null;
 }
 
-function headlineTiles(checkpointRows){
+function headlineTiles(checkpointRows, brands){
   return HEADLINE_PARAMS.map(p => {
-    const non = paramNonCompliantCount(checkpointRows, p.key);
+    const non = paramNonCompliantCount(checkpointRows, p.key, brands);
     return non === null ? '' : statTile(p.label, non);
   }).join('');
 }
@@ -1225,7 +1234,7 @@ function renderExecSummaryBody(){
     statTile('No. of audits', d.audits),
     statTile('Stores audited', d.stores),
     SCOPE_MODE === 'city' ? statTile('City', SCOPE_CITY || '-') : statTile('Cities covered', SCOPE_CITIES.length),
-    headlineTiles(d.scopedCkpt),
+    headlineTiles(d.scopedCkpt, ['FNV','NOICE','OTHER']),
   ].join('');
 
   panel.innerHTML = `
@@ -1375,7 +1384,7 @@ function renderCategoryTabBody(brand){
     statTile('Stores audited', d.stores),
     SCOPE_MODE === 'city' ? statTile('City', SCOPE_CITY || '-') : statTile('Cities covered', SCOPE_CITIES.length),
     statTile(`${BRAND_LABEL[brand]} compliance score`, pct(d.score_pct)),
-    headlineTiles(d.brandCkpt),
+    headlineTiles(d.brandCkpt, [brand]),
   ].join('');
 
   panel.innerHTML = `
